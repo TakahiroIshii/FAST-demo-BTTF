@@ -13,6 +13,9 @@ export interface AppConfig {
     pattern: string
     deployment_type: DeploymentType
   }
+  observability?: {
+    sampling_percentage: number
+  }
 }
 
 export class ConfigManager {
@@ -56,6 +59,12 @@ export class ConfigManager {
           pattern: parsedConfig.backend?.pattern || "strands-single-agent",
           deployment_type: deploymentType,
         },
+        // Observability config is optional — omit entirely if not in config.yaml
+        ...(parsedConfig.observability && {
+          observability: {
+            sampling_percentage: parsedConfig.observability.sampling_percentage,
+          },
+        }),
       }
     } catch (error) {
       throw new Error(`Failed to parse configuration file ${configPath}: ${error}`)

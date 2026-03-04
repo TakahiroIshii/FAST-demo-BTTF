@@ -61,12 +61,12 @@ export function FeedbackDialog({ isOpen, onClose, onSubmit, feedbackType }: Feed
             id="feedback-comment"
             value={comment}
             onChange={(e) => setComment(e.target.value)}
-            className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent resize-none"
+            className="w-full px-3 py-2 border border-border rounded-md bg-secondary text-foreground focus:outline-none focus:ring-2 focus:ring-ring focus:border-transparent resize-none"
             rows={4}
             placeholder="Share your thoughts..."
             maxLength={5000}
           />
-          <div className="text-xs text-gray-500 text-right">{comment.length} / 5000</div>
+          <div className="text-xs text-muted-foreground text-right">{comment.length} / 5000</div>
         </div>
 
         <DialogFooter>

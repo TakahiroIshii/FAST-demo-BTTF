@@ -379,6 +379,10 @@ def generate_aws_exports(
         "agentPattern": pattern,
     }
 
+    # Include optional stack outputs when present
+    if "VideoUploadApiUrl" in outputs:
+        aws_exports["videoUploadApiUrl"] = outputs["VideoUploadApiUrl"]
+
     public_dir = frontend_dir / "public"
     public_dir.mkdir(parents=True, exist_ok=True)
 

@@ -7,6 +7,7 @@ import * as dynamodb from "aws-cdk-lib/aws-dynamodb"
 import * as apigateway from "aws-cdk-lib/aws-apigateway"
 import * as logs from "aws-cdk-lib/aws-logs"
 import * as s3 from "aws-cdk-lib/aws-s3"
+import * as s3deploy from "aws-cdk-lib/aws-s3-deployment"
 import * as agentcore from "@aws-cdk/aws-bedrock-agentcore-alpha"
 import * as bedrockagentcore from "aws-cdk-lib/aws-bedrockagentcore"
 import { PythonFunction } from "@aws-cdk/aws-lambda-python-alpha"
@@ -32,6 +33,7 @@ export class BackendStack extends cdk.NestedStack {
   public readonly userPoolClientId: string
   public readonly userPoolDomain: cognito.UserPoolDomain
   public feedbackApiUrl: string
+  public videoUploadApiUrl: string
   public runtimeArn: string
   public memoryArn: string
   private agentName: cdk.CfnParameter
@@ -39,6 +41,7 @@ export class BackendStack extends cdk.NestedStack {
   private userPool: cognito.IUserPool
   private machineClient: cognito.UserPoolClient
   private agentRuntime: agentcore.Runtime
+  private videoUploadBucket: s3.Bucket
 
   constructor(scope: Construct, id: string, props: BackendStackProps) {
     super(scope, id, props)
@@ -76,6 +79,11 @@ export class BackendStack extends cdk.NestedStack {
 
     // Create AgentCore Gateway (before Runtime)
     this.createAgentCoreGateway(props.config)
+
+    // Create Video Upload API (presigned URL endpoint for uploading videos to S3)
+    // Must be created before AgentCore Runtime so the video bucket exists
+    // when the runtime grants read access to it for Nova Pro video analysis
+    this.createVideoUploadApi(props.config, props.frontendUrl)
 
     // Create AgentCore Runtime resources
     this.createAgentCoreRuntime(props.config)
@@ -293,12 +301,18 @@ export class BackendStack extends cdk.NestedStack {
       })
     )
 
+    // Grant agent role read access to the video upload bucket so Nova Pro
+    // can read uploaded videos via S3 URI during inference.
+    this.videoUploadBucket.grantRead(agentRole)
+
     // Environment variables for the runtime
     const envVars: { [key: string]: string } = {
       AWS_REGION: stack.region,
       AWS_DEFAULT_REGION: stack.region,
       MEMORY_ID: memoryId,
       STACK_NAME: config.stack_name_base, // Required for agent to find SSM parameters
+      VIDEO_BUCKET_NAME: this.videoUploadBucket.bucketName, // S3 bucket for video uploads
+      AWS_ACCOUNT_ID: this.account, // Required for Nova Pro video S3 bucketOwner field
     }
 
     // Create the runtime using L2 construct
@@ -555,6 +569,143 @@ export class BackendStack extends cdk.NestedStack {
     })
   }
 
+  /**
+   * Creates an S3 bucket for video uploads, a Lambda function that generates presigned
+   * PUT URLs, and an API Gateway endpoint to expose the Lambda. This enables the frontend
+   * to upload video files directly to S3 for Nova Pro multimodal analysis.
+   *
+   * API Contract - POST /video-upload-url
+   * Authorization: Bearer <cognito-id-token> (required)
+   *
+   * Request Body:
+   *   fileName (string, required): Original filename of the video
+   *   contentType (string, required): MIME type (video/mp4, video/webm, video/quicktime)
+   *
+   * Success Response (200):
+   *   { uploadUrl: string, s3Uri: string, objectKey: string }
+   *
+   * @param config - Application configuration
+   * @param frontendUrl - Frontend URL for CORS configuration
+   */
+  private createVideoUploadApi(config: AppConfig, frontendUrl: string): void {
+    // S3 bucket for video uploads — ephemeral storage for Nova Pro analysis
+    // Let CDK auto-generate the bucket name to avoid invalid characters
+    // from stack_name_base (underscores) and unresolved CDK tokens
+    this.videoUploadBucket = new s3.Bucket(this, "VideoUploadBucket", {
+      removalPolicy: cdk.RemovalPolicy.DESTROY,
+      autoDeleteObjects: true,
+      blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL,
+      encryption: s3.BucketEncryption.S3_MANAGED,
+      // Auto-delete uploaded videos after 1 day — they are ephemeral
+      lifecycleRules: [
+        {
+          expiration: cdk.Duration.days(1),
+          enabled: true,
+        },
+      ],
+      // CORS configuration for browser-based PUT uploads via presigned URLs
+      cors: [
+        {
+          allowedMethods: [s3.HttpMethods.PUT],
+          allowedOrigins: [frontendUrl, "http://localhost:3000"],
+          allowedHeaders: ["*"],
+          maxAge: 3600,
+        },
+      ],
+    })
+
+    // Lambda function that generates presigned S3 PUT URLs
+    const videoPresignLambda = new PythonFunction(this, "VideoPresignLambda", {
+      functionName: `${config.stack_name_base}-video-presign`,
+      runtime: lambda.Runtime.PYTHON_3_13,
+      entry: path.join(__dirname, "..", "lambdas", "video-presign"),
+      handler: "handler",
+      environment: {
+        VIDEO_BUCKET_NAME: this.videoUploadBucket.bucketName,
+        CORS_ALLOWED_ORIGINS: `${frontendUrl},http://localhost:3000`,
+      },
+      timeout: cdk.Duration.seconds(30),
+      logGroup: new logs.LogGroup(this, "VideoPresignLambdaLogGroup", {
+        logGroupName: `/aws/lambda/${config.stack_name_base}-video-presign`,
+        retention: logs.RetentionDays.ONE_WEEK,
+        removalPolicy: cdk.RemovalPolicy.DESTROY,
+      }),
+    })
+
+    // Grant the Lambda permission to generate presigned URLs (requires s3:PutObject)
+    this.videoUploadBucket.grantPut(videoPresignLambda)
+
+    // API Gateway for the video upload presigned URL endpoint
+    // Follows the same pattern as createFeedbackApi()
+    const videoApi = new apigateway.RestApi(this, "VideoUploadApi", {
+      restApiName: `${config.stack_name_base}-video-upload-api`,
+      description: "API for generating presigned S3 upload URLs for video files",
+      defaultCorsPreflightOptions: {
+        allowOrigins: [frontendUrl, "http://localhost:3000"],
+        allowMethods: ["POST", "OPTIONS"],
+        allowHeaders: ["Content-Type", "Authorization"],
+      },
+      deployOptions: {
+        stageName: "prod",
+        throttlingRateLimit: 20,
+        throttlingBurstLimit: 40,
+        loggingLevel: apigateway.MethodLoggingLevel.INFO,
+        metricsEnabled: true,
+        accessLogDestination: new apigateway.LogGroupLogDestination(
+          new logs.LogGroup(this, "VideoUploadApiAccessLogGroup", {
+            logGroupName: `/aws/apigateway/${config.stack_name_base}-video-upload-api-access`,
+            retention: logs.RetentionDays.ONE_WEEK,
+            removalPolicy: cdk.RemovalPolicy.DESTROY,
+          })
+        ),
+        accessLogFormat: apigateway.AccessLogFormat.jsonWithStandardFields(),
+      },
+    })
+
+    // Cognito authorizer — same user pool as feedback API
+    const videoAuthorizer = new apigateway.CognitoUserPoolsAuthorizer(
+      this,
+      "VideoUploadApiAuthorizer",
+      {
+        cognitoUserPools: [this.userPool],
+        identitySource: "method.request.header.Authorization",
+        authorizerName: `${config.stack_name_base}-video-upload-authorizer`,
+      }
+    )
+
+    // POST /video-upload-url endpoint
+    const videoUploadResource = videoApi.root.addResource("video-upload-url")
+    videoUploadResource.addMethod(
+      "POST",
+      new apigateway.LambdaIntegration(videoPresignLambda),
+      {
+        authorizer: videoAuthorizer,
+        authorizationType: apigateway.AuthorizationType.COGNITO,
+      }
+    )
+
+    // Store the API URL
+    this.videoUploadApiUrl = videoApi.url
+
+    // Store in SSM for frontend configuration
+    new ssm.StringParameter(this, "VideoUploadApiUrlParam", {
+      parameterName: `/${config.stack_name_base}/video-upload-api-url`,
+      stringValue: videoApi.url,
+      description: "Video Upload API Gateway URL",
+    })
+
+    // Outputs
+    new cdk.CfnOutput(this, "VideoUploadApiUrl", {
+      description: "Video Upload API Gateway URL",
+      value: videoApi.url,
+    })
+
+    new cdk.CfnOutput(this, "VideoUploadBucketName", {
+      description: "S3 bucket for video uploads",
+      value: this.videoUploadBucket.bucketName,
+    })
+  }
+
   private createAgentCoreGateway(config: AppConfig): void {
     // Create sample tool Lambda
     const toolLambda = new lambda.Function(this, "SampleToolLambda", {
@@ -569,6 +720,46 @@ export class BackendStack extends cdk.NestedStack {
       }),
     })
 
+    // --- PDF Search Tool ---
+    // S3 bucket to store the PDF document for the search tool
+    // Let CDK auto-generate the bucket name to avoid invalid characters
+    // from stack_name_base (underscores) and unresolved CDK tokens
+    const pdfBucket = new s3.Bucket(this, "PdfSearchBucket", {
+      removalPolicy: cdk.RemovalPolicy.DESTROY,
+      autoDeleteObjects: true,
+      blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL,
+      encryption: s3.BucketEncryption.S3_MANAGED,
+    })
+
+    // Deploy the PDF file from the local data/ directory to S3 during CDK deploy
+    const pdfDataPath = path.join(__dirname, "../../gateway/tools/pdf_search_tool/data")
+    new s3deploy.BucketDeployment(this, "PdfBucketDeployment", {
+      sources: [s3deploy.Source.asset(pdfDataPath)],
+      destinationBucket: pdfBucket,
+    })
+
+    // Create PDF search tool Lambda using PythonFunction to bundle pypdf dependency
+    const pdfSearchLambda = new PythonFunction(this, "PdfSearchToolLambda", {
+      entry: path.join(__dirname, "../../gateway/tools/pdf_search_tool"),
+      index: "pdf_search_lambda.py",
+      handler: "handler",
+      runtime: lambda.Runtime.PYTHON_3_13,
+      timeout: cdk.Duration.seconds(60),
+      memorySize: 512,
+      environment: {
+        PDF_BUCKET_NAME: pdfBucket.bucketName,
+        PDF_OBJECT_KEY: "bttf4th.pdf",
+      },
+      logGroup: new logs.LogGroup(this, "PdfSearchToolLambdaLogGroup", {
+        logGroupName: `/aws/lambda/${config.stack_name_base}-pdf-search-tool`,
+        retention: logs.RetentionDays.ONE_WEEK,
+        removalPolicy: cdk.RemovalPolicy.DESTROY,
+      }),
+    })
+
+    // Grant the PDF search Lambda read access to the PDF bucket
+    pdfBucket.grantRead(pdfSearchLambda)
+
     // Create comprehensive IAM role for gateway
     const gatewayRole = new iam.Role(this, "GatewayRole", {
       assumedBy: new iam.ServicePrincipal("bedrock-agentcore.amazonaws.com"),
@@ -577,6 +768,7 @@ export class BackendStack extends cdk.NestedStack {
 
     // Lambda invoke permission
     toolLambda.grantInvoke(gatewayRole)
+    pdfSearchLambda.grantInvoke(gatewayRole)
 
     // Bedrock permissions (region-agnostic)
     gatewayRole.addToPolicy(
@@ -623,7 +815,11 @@ export class BackendStack extends cdk.NestedStack {
 
     // Load tool specification from JSON file
     const toolSpecPath = path.join(__dirname, "../../gateway/tools/sample_tool/tool_spec.json")
-    const apiSpec = JSON.parse(require("fs").readFileSync(toolSpecPath, "utf8"))
+    const apiSpec = JSON.parse(fs.readFileSync(toolSpecPath, "utf8"))
+
+    // Load PDF search tool specification from JSON file
+    const pdfToolSpecPath = path.join(__dirname, "../../gateway/tools/pdf_search_tool/tool_spec.json")
+    const pdfApiSpec = JSON.parse(fs.readFileSync(pdfToolSpecPath, "utf8"))
 
     // Cognito OAuth2 configuration for gateway
     const cognitoIssuer = `https://cognito-idp.${this.region}.amazonaws.com/${this.userPool.userPoolId}`
@@ -676,7 +872,34 @@ export class BackendStack extends cdk.NestedStack {
 
     // Ensure proper creation order
     gatewayTarget.addDependency(gateway)
+
+    // Create Gateway Target for PDF Search Tool
+    const pdfSearchGatewayTarget = new bedrockagentcore.CfnGatewayTarget(this, "PdfSearchGatewayTarget", {
+      gatewayIdentifier: gateway.attrGatewayIdentifier,
+      name: "pdf-search-tool-target",
+      description: "PDF search tool Lambda target for querying PDF documents",
+      targetConfiguration: {
+        mcp: {
+          lambda: {
+            lambdaArn: pdfSearchLambda.functionArn,
+            toolSchema: {
+              inlinePayload: pdfApiSpec,
+            },
+          },
+        },
+      },
+      credentialProviderConfigurations: [
+        {
+          credentialProviderType: "GATEWAY_IAM_ROLE",
+        },
+      ],
+    })
+
+    // Ensure proper creation order for PDF search target
+    pdfSearchGatewayTarget.addDependency(gateway)
+
     gateway.node.addDependency(toolLambda)
+    gateway.node.addDependency(pdfSearchLambda)
     gateway.node.addDependency(this.machineClient)
     gateway.node.addDependency(gatewayRole)
 
@@ -711,6 +934,21 @@ export class BackendStack extends cdk.NestedStack {
     new cdk.CfnOutput(this, "ToolLambdaArn", {
       description: "ARN of the sample tool Lambda",
       value: toolLambda.functionArn,
+    })
+
+    new cdk.CfnOutput(this, "PdfSearchTargetId", {
+      value: pdfSearchGatewayTarget.ref,
+      description: "PDF Search Gateway Target ID",
+    })
+
+    new cdk.CfnOutput(this, "PdfSearchLambdaArn", {
+      description: "ARN of the PDF search tool Lambda",
+      value: pdfSearchLambda.functionArn,
+    })
+
+    new cdk.CfnOutput(this, "PdfBucketName", {
+      description: "S3 bucket for PDF documents",
+      value: pdfBucket.bucketName,
     })
   }
 

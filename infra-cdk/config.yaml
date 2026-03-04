@@ -7,3 +7,9 @@ admin_user_email: null # Example: admin@example.com
 backend:
   pattern: strands-single-agent # Available patterns: strands-single-agent, langgraph-single-agent
   deployment_type: docker # Available deployment types: docker (default), zip
+
+# Optional: CloudWatch Transaction Search configuration
+# Enables GenAI observability traces in CloudWatch. Set sampling_percentage to control
+# what percentage of traces get indexed (100 = all traces, good for dev; lower for prod).
+observability:
+  sampling_percentage: 100

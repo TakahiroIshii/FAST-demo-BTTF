@@ -7,7 +7,7 @@ import { ChatMessages } from "./ChatMessages"
 import { Message, MessageSegment, ToolCall } from "./types"
 
 import { useGlobal } from "@/app/context/GlobalContext"
-import { AgentCoreClient } from "@/lib/agentcore-client"
+import { AgentCoreClient, resetThinkingFilter } from "@/lib/agentcore-client"
 import type { AgentPattern } from "@/lib/agentcore-client"
 import { submitFeedback } from "@/services/feedbackService"
 import { useAuth } from "react-oidc-context"
@@ -34,7 +34,7 @@ export default function ChatInterface() {
 
   // Load agent configuration and create client on mount
   useEffect(() => {
-    async function loadConfig() {
+    async function loadConfig(): Promise<void> {
       try {
         const response = await fetch("/aws-exports.json")
         if (!response.ok) {
@@ -67,7 +67,12 @@ export default function ChatInterface() {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" })
   }, [messages])
 
-  const sendMessage = async (userMessage: string) => {
+  /**
+   * Send a user message to the agent.
+   *
+   * @param userMessage - The text content of the user's message
+   */
+  const sendMessage = async (userMessage: string): Promise<void> => {
     if (!userMessage.trim() || !client) return
 
     // Clear any previous errors
@@ -94,36 +99,39 @@ export default function ChatInterface() {
     setMessages((prev) => [...prev, assistantResponse])
 
     try {
-      // Get auth token from react-oidc-context
+      // Get auth tokens from react-oidc-context
       const accessToken = auth.user?.access_token
 
       if (!accessToken) {
         throw new Error("Authentication required. Please log in again.")
       }
 
-      const segments: MessageSegment[] = [];
-      const toolCallMap = new Map<string, ToolCall>();
+      const segments: MessageSegment[] = []
+      const toolCallMap = new Map<string, ToolCall>()
 
-      const updateMessage = () => {
+      const updateMessage = (): void => {
         // Build content from text segments for backward compat
         const content = segments
           .filter((s): s is Extract<MessageSegment, { type: "text" }> => s.type === "text")
           .map((s) => s.content)
-          .join("");
+          .join("")
 
         setMessages((prev) => {
-          const updated = [...prev];
+          const updated = [...prev]
           updated[updated.length - 1] = {
             ...updated[updated.length - 1],
             content,
             segments: [...segments],
-          };
-          return updated;
-        });
-      };
+          }
+          return updated
+        })
+      }
 
-      // User identity is extracted server-side from the validated JWT token,
-      // not passed as a parameter — prevents impersonation via prompt injection.
+      // Reset the thinking-tag filter so leftover state from a previous
+      // (possibly interrupted) stream doesn't leak into this one.
+      resetThinkingFilter()
+
+      // Invoke the agent
       await client.invoke(
         userMessage,
         sessionId,
@@ -132,23 +140,23 @@ export default function ChatInterface() {
           switch (event.type) {
             case "text": {
               // If text arrives after a tool segment, mark all pending tools as complete
-              const prev = segments[segments.length - 1];
+              const prev = segments[segments.length - 1]
               if (prev && prev.type === "tool") {
                 for (const tc of toolCallMap.values()) {
                   if (tc.status === "streaming" || tc.status === "executing") {
-                    tc.status = "complete";
+                    tc.status = "complete"
                   }
                 }
               }
               // Append to last text segment, or create new one
-              const last = segments[segments.length - 1];
+              const last = segments[segments.length - 1]
               if (last && last.type === "text") {
-                last.content += event.content;
+                last.content += event.content
               } else {
-                segments.push({ type: "text", content: event.content });
+                segments.push({ type: "text", content: event.content })
               }
-              updateMessage();
-              break;
+              updateMessage()
+              break
             }
             case "tool_use_start": {
               const tc: ToolCall = {
@@ -156,40 +164,40 @@ export default function ChatInterface() {
                 name: event.name,
                 input: "",
                 status: "streaming",
-              };
-              toolCallMap.set(event.toolUseId, tc);
-              segments.push({ type: "tool", toolCall: tc });
-              updateMessage();
-              break;
+              }
+              toolCallMap.set(event.toolUseId, tc)
+              segments.push({ type: "tool", toolCall: tc })
+              updateMessage()
+              break
             }
             case "tool_use_delta": {
-              const tc = toolCallMap.get(event.toolUseId);
+              const tc = toolCallMap.get(event.toolUseId)
               if (tc) {
-                tc.input += event.input;
+                tc.input += event.input
               }
-              updateMessage();
-              break;
+              updateMessage()
+              break
             }
             case "tool_result": {
-              const tc = toolCallMap.get(event.toolUseId);
+              const tc = toolCallMap.get(event.toolUseId)
               if (tc) {
-                tc.result = event.result;
-                tc.status = "complete";
+                tc.result = event.result
+                tc.status = "complete"
               }
-              updateMessage();
-              break;
+              updateMessage()
+              break
             }
             case "message": {
               if (event.role === "assistant") {
                 for (const tc of toolCallMap.values()) {
-                  if (tc.status === "streaming") tc.status = "executing";
+                  if (tc.status === "streaming") tc.status = "executing"
                 }
-                updateMessage();
+                updateMessage()
               }
-              break;
+              break
             }
           }
-        }
+        },
       )
     } catch (err) {
       const errorMessage = err instanceof Error ? err.message : "Unknown error"
@@ -212,9 +220,8 @@ export default function ChatInterface() {
   }
 
   // Handle form submission
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = (e: React.FormEvent): void => {
     e.preventDefault()
-
     sendMessage(input)
   }
 
@@ -223,7 +230,7 @@ export default function ChatInterface() {
     messageContent: string,
     feedbackType: "positive" | "negative",
     comment: string
-  ) => {
+  ): Promise<void> => {
     try {
       // Use ID token for API Gateway Cognito authorizer (not access token)
       const idToken = auth.user?.id_token
@@ -250,13 +257,13 @@ export default function ChatInterface() {
     }
   }
 
-  // Start a new chat (generates new session ID)
-  const startNewChat = () => {
+  /**
+   * Start a new chat by clearing all messages, input, and errors.
+   */
+  const startNewChat = (): void => {
     setMessages([])
     setInput("")
     setError(null)
-    // Note: sessionId stays the same for the component lifecycle
-    // If you want a new session ID, you'd need to remount the component
   }
 
   // Check if this is the initial state (no messages)
@@ -286,8 +293,8 @@ export default function ChatInterface() {
 
           {/* Centered welcome message */}
           <div className="text-center mb-6">
-            <h2 className="text-2xl font-bold text-gray-800">Welcome to FAST Chat</h2>
-            <p className="text-gray-600 mt-2">Ask me anything to get started</p>
+            <h2 className="text-2xl font-bold text-foreground">Welcome to FAST Chat</h2>
+            <p className="text-muted-foreground mt-2">Ask me anything to get started</p>
           </div>
 
           {/* Centered input */}

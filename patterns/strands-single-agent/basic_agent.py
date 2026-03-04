@@ -64,10 +64,12 @@ def create_basic_agent(user_id: str, session_id: str) -> Agent:
     the Gateway. If Gateway connection fails, it falls back to an agent without tools.
     """
     system_prompt = """You are a helpful assistant with access to tools via the Gateway and Code Interpreter.
-    When asked about your tools, list them and explain what they do."""
+
+    When asked about your tools, list them and explain what they do.
+    Respond directly and concisely."""
 
     bedrock_model = BedrockModel(
-        model_id="us.anthropic.claude-sonnet-4-5-20250929-v1:0", temperature=0.1
+        model_id="us.anthropic.claude-sonnet-4-20250514-v1:0", temperature=0.1
     )
 
     memory_id = os.environ.get("MEMORY_ID")
@@ -140,9 +142,16 @@ async def agent_stream(payload, context: RequestContext):
     This is the function that AgentCore Runtime calls when the agent receives a request.
     It extracts the user's query from the payload, securely obtains the user ID from
     the validated JWT token in the request context, creates an agent with Gateway tools
-    and memory, and streams the response back. This function handles the complete
-    request lifecycle with token-level streaming. The user ID is extracted from the 
-    JWT token (via RequestContext).
+    and memory, and streams the response back.
+
+    Args:
+        payload (dict): Request payload containing:
+            - prompt (str): The user's text query (required)
+            - runtimeSessionId (str): Session ID for memory continuity (required)
+        context (RequestContext): Request context containing the validated JWT token
+
+    Yields:
+        dict: Streaming events serialized as JSON-safe dictionaries
     """
     user_query = payload.get("prompt")
     session_id = payload.get("runtimeSessionId")
@@ -164,7 +173,7 @@ async def agent_stream(payload, context: RequestContext):
         )
         print(f"[STREAM] Query: {user_query}")
 
-        agent = create_basic_agent(user_id, session_id)
+        agent = create_basic_agent(user_id=user_id, session_id=session_id)
 
         # Use the agent's stream_async method for true token-level streaming
         async for event in agent.stream_async(user_query):

@@ -6,6 +6,7 @@ import { AppConfig } from "./utils/config-manager"
 import { BackendStack } from "./backend-stack"
 import { AmplifyHostingStack } from "./amplify-hosting-stack"
 import { CognitoStack } from "./cognito-stack"
+import { ObservabilityStack } from "./observability-stack"
 
 export interface FastAmplifyStackProps extends cdk.StackProps {
   config: AppConfig
@@ -15,6 +16,7 @@ export class FastMainStack extends cdk.Stack {
   public readonly amplifyHostingStack: AmplifyHostingStack
   public readonly backendStack: BackendStack
   public readonly cognitoStack: CognitoStack
+  public readonly observabilityStack: ObservabilityStack
 
   constructor(scope: Construct, id: string, props: FastAmplifyStackProps) {
     const description =
@@ -31,7 +33,15 @@ export class FastMainStack extends cdk.Stack {
       callbackUrls: ["http://localhost:3000", this.amplifyHostingStack.amplifyUrl],
     })
 
-    // Step 2: Create backend stack with the predictable Amplify URL and Cognito details
+    // Step 2: Configure account-level observability (Transaction Search)
+    // This must happen before the runtime starts so traces flow to CloudWatch Logs.
+    // Uses config.observability.sampling_percentage if set, otherwise defaults to 100%.
+    this.observabilityStack = new ObservabilityStack(this, `${id}-observability`, {
+      config: props.config,
+      samplingPercentage: props.config.observability?.sampling_percentage ?? 100,
+    })
+
+    // Step 3: Create backend stack with the predictable Amplify URL and Cognito details
     this.backendStack = new BackendStack(this, `${id}-backend`, {
       config: props.config,
       userPoolId: this.cognitoStack.userPoolId,
@@ -81,6 +91,12 @@ export class FastMainStack extends cdk.Stack {
       value: this.backendStack.feedbackApiUrl,
       description: "Feedback API Gateway URL",
       exportName: `${props.config.stack_name_base}-FeedbackApiUrl`,
+    })
+
+    new cdk.CfnOutput(this, "VideoUploadApiUrl", {
+      value: this.backendStack.videoUploadApiUrl,
+      description: "Video Upload API Gateway URL for presigned S3 upload URLs",
+      exportName: `${props.config.stack_name_base}-VideoUploadApiUrl`,
     })
 
     new cdk.CfnOutput(this, "AmplifyConsoleUrl", {

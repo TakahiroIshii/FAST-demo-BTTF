@@ -59,8 +59,8 @@ export function ChatMessage({ message, sessionId: _sessionId, onFeedbackSubmit }
       <div
         className={`max-w-[80%] break-words ${
           message.role === "user"
-            ? "p-3 rounded-lg bg-gray-800 text-white rounded-br-none whitespace-pre-wrap"
-            : "text-gray-800"
+            ? "p-3 rounded-lg bg-primary text-primary-foreground rounded-br-none whitespace-pre-wrap"
+            : "text-foreground"
         }`}
       >
         {message.role === "assistant" ? renderAssistantContent() : message.content}
@@ -68,7 +68,7 @@ export function ChatMessage({ message, sessionId: _sessionId, onFeedbackSubmit }
 
       {/* Timestamp and Feedback buttons for assistant messages */}
       <div className="flex items-center gap-2 mt-1 px-1">
-        <div className="text-xs text-gray-500">{formatTime(message.timestamp)}</div>
+        <div className="text-xs text-muted-foreground">{formatTime(message.timestamp)}</div>
 
         {/* Show feedback buttons only for assistant messages with content */}
         {message.role === "assistant" && message.content && (
@@ -76,7 +76,7 @@ export function ChatMessage({ message, sessionId: _sessionId, onFeedbackSubmit }
             <button
               onClick={() => handleFeedbackClick("positive")}
               disabled={feedbackSubmitted}
-              className="p-1 text-gray-400 hover:text-green-600 hover:bg-green-50 rounded transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+              className="p-1 text-muted-foreground hover:text-green-400 hover:bg-green-400/10 rounded transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
               aria-label="Positive feedback"
               title="Good response"
             >
@@ -85,14 +85,14 @@ export function ChatMessage({ message, sessionId: _sessionId, onFeedbackSubmit }
             <button
               onClick={() => handleFeedbackClick("negative")}
               disabled={feedbackSubmitted}
-              className="p-1 text-gray-400 hover:text-red-600 hover:bg-red-50 rounded transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+              className="p-1 text-muted-foreground hover:text-red-400 hover:bg-red-400/10 rounded transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
               aria-label="Negative feedback"
               title="Bad response"
             >
               <ThumbsDown size={14} />
             </button>
             {feedbackSubmitted && (
-              <span className="text-xs text-gray-500 ml-1">Thanks for your feedback!</span>
+              <span className="text-xs text-muted-foreground ml-1">Thanks for your feedback!</span>
             )}
           </div>
         )}

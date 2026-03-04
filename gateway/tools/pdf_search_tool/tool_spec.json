@@ -1,0 +1,22 @@
+[
+  {
+    "name": "search_pdf",
+    "description": "Search through a PDF document (Back to the Future movie script) to find relevant sections that answer a question. Provide a question or keywords and the tool will return the most relevant excerpts from the script.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "question": {
+          "type": "string",
+          "description": "The question or keywords to search for in the PDF script. For example: 'What does Doc say about the flux capacitor?' or 'DeLorean time travel scene'"
+        },
+        "max_results": {
+          "type": "integer",
+          "description": "Maximum number of relevant text sections to return (default: 5)"
+        }
+      },
+      "required": [
+        "question"
+      ]
+    }
+  }
+]

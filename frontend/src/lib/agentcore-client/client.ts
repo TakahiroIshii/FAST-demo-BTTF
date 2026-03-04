@@ -26,11 +26,19 @@ export class AgentCoreClient {
     return crypto.randomUUID();
   }
 
+  /**
+   * Invoke the agent runtime with a user query and stream the response.
+   *
+   * @param query - The user's text prompt
+   * @param sessionId - Session ID for conversation continuity
+   * @param accessToken - Cognito access token for authentication
+   * @param onEvent - Callback for each streaming event
+   */
   async invoke(
     query: string,
     sessionId: string,
     accessToken: string,
-    onEvent: StreamCallback
+    onEvent: StreamCallback,
   ): Promise<void> {
     if (!accessToken) throw new Error("No valid access token found.");
     if (!this.runtimeArn) throw new Error("Agent Runtime ARN not configured.");
@@ -40,6 +48,12 @@ export class AgentCoreClient {
     const url = `${endpoint}/runtimes/${escapedArn}/invocations?qualifier=DEFAULT`;
 
     const traceId = `1-${Math.floor(Date.now() / 1000).toString(16)}-${crypto.randomUUID()}`;
+
+    // Build the request body
+    const requestBody: Record<string, string> = {
+      prompt: query,
+      runtimeSessionId: sessionId,
+    };
 
     // User identity is extracted server-side from the validated JWT token
     // (Authorization header), not sent in the payload body. This prevents
@@ -52,10 +66,7 @@ export class AgentCoreClient {
         "Content-Type": "application/json",
         "X-Amzn-Bedrock-AgentCore-Runtime-Session-Id": sessionId,
       },
-      body: JSON.stringify({
-        prompt: query,
-        runtimeSessionId: sessionId,
-      }),
+      body: JSON.stringify(requestBody),
     });
 
     if (!response.ok) {

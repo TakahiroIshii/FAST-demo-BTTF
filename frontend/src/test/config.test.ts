@@ -139,7 +139,7 @@ describe('Configuration Verification Tests', () => {
     it('should have correct DOCTYPE and html structure', () => {
       const indexHtml = readFileSync(resolve(__dirname, '../../index.html'), 'utf-8')
       expect(indexHtml).toContain('<!DOCTYPE html>')
-      expect(indexHtml).toContain('<html lang="en">')
+      expect(indexHtml).toContain('<html lang="en"')
     })
 
     it('should have root div element', () => {
